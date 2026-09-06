@@ -278,13 +278,23 @@ async function handleCommand(
 		const isIdle = ctx.isIdle();
 
 		try {
+			// String content, verbatim from control.ts: convertToLlm handles it and
+			// the TUI renders it via the [session-message] custom message renderer.
+			const customMessage = {
+				customType: "session-message",
+				content: text,
+				display: true,
+			};
 			if (isIdle) {
 				// Idle: always immediate, regardless of mode.
-				pi_sendUserMessage(state, text);
+				pi_sendMessage(customMessage, { triggerTurn: true });
 			} else {
-				// Streaming: deliverAs is required; steer (default) lands between tool
-				// calls of the current run, follow_up waits for the agent to finish.
-				pi_sendUserMessage(state, text, mode === "follow_up" ? "followUp" : "steer");
+				// Streaming: steer (default) lands between tool calls of the current
+				// run, follow_up waits for the agent to finish.
+				pi_sendMessage(customMessage, {
+					triggerTurn: true,
+					deliverAs: mode === "follow_up" ? "followUp" : "steer",
+				});
 			}
 			respond(true, "send", { delivered: true, mode: isIdle ? "direct" : mode });
 		} catch (error) {
@@ -296,9 +306,9 @@ async function handleCommand(
 	respond(false, command.type, undefined, `Unsupported command: ${command.type}`);
 }
 
-// sendUserMessage is captured off the API object because the closure is created
+// sendMessage is captured off the API object because the closure is created
 // before pi is in scope inside handleCommand.
-let pi_sendUserMessage: ExtensionAPI["sendUserMessage"];
+let pi_sendMessage: ExtensionAPI["sendMessage"];
 
 // ============================================================================
 // Server
@@ -398,8 +408,8 @@ const SOCK_NAME_SAFE = /^[A-Za-z0-9._-]+$/.test(SOCK_NAME)
 // ============================================================================
 
 export default function (pi: ExtensionAPI) {
-	pi_sendUserMessage = (...args: Parameters<ExtensionAPI["sendUserMessage"]>) => {
-		return pi.sendUserMessage(...args);
+	pi_sendMessage = (...args: Parameters<ExtensionAPI["sendMessage"]>) => {
+		return pi.sendMessage(...args);
 	};
 
 	const state: SocketState = {
