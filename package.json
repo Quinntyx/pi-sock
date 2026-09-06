@@ -1,0 +1,12 @@
+{
+  "name": "pi-sock",
+  "version": "0.1.0",
+  "description": "Unix-socket JSONL RPC extension for live pi TUI sessions - inject messages into, observe, and abort the running agent while the TUI stays attached",
+  "license": "MIT",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

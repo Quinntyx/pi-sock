@@ -1,0 +1,15 @@
+NOTICE
+======
+
+pi-sock is derived from the session control extension in
+https://github.com/mitsuhiko/agent-stuff (npm: mitsupi),
+`extensions/control.ts` by Armin Ronacher, licensed under the MIT license.
+
+Substantial portions of the socket server, message injection, and message
+extraction logic in index.ts are retained from that file. It has been trimmed of
+multi-session discovery, alias handling, CLI startup flags, the send_to_session
+tools, session rewind, and LLM summarization, and adapted with persistent
+multi-event subscriptions, get_state, and pi.sendUserMessage-based injection.
+
+Original work in this repository is also licensed MIT, copyright (c) 2026
+Quinntyx.
