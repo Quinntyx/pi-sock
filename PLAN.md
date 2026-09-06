@@ -1,16 +1,10 @@
 # pi-sock: unix-socket RPC for a live pi TUI session
 
-## Goal
-
-Run omn-assistant (pi TUI) in one tmux pane and Ren — a Pipecat + OpenWakeWord voice
-assistant — in another. Ren relays short spoken requests into the live omn-assistant
-conversation, acknowledges immediately ("Okay, scheduling that"), and reports a spoken
-summary when the agent settles. The user keeps full interactive control of the same
-session in the TUI (same context, visible state).
-
-pi-sock itself is completely generic and decoupled from Ren: it is a transport that
-lets any local process inject messages into, observe, and abort a live pi session.
-Nothing in the wire protocol knows a voice assistant exists.
+pi-sock is a generic transport: any local process can inject messages into, observe,
+and abort a live pi session running with a full TUI. It is decoupled from every
+client — the wire protocol carries nothing client-specific. The flagship client is
+the Ren voice assistant, which lives in its own repo (`quinntyx/ren-assistant`)
+with its own plan; nothing here knows or cares that it exists beyond the protocol.
 
 ## Base implementation
 
@@ -43,25 +37,21 @@ portions retained from control.ts (ISC/MIT, Armin Ronacher).
 ## Scope note: confirmation dialogs
 
 Out of scope for now. YOLO mode means blocking dialogs practically do not occur, and
-the operator sits in tmux next to Ren with the full TUI, so any rare dialog is
-answered manually. No `ui_prompt_start` plumbing in the first version.
+the operator sits in tmux next to the client with the full TUI, so any rare dialog
+is answered manually. No `ui_prompt_start` plumbing in the first version.
 
 ## Architecture
 
 ```
-tmux pane 1: pi TUI (omn-assistant profile)
+pi TUI process (omn-assistant profile, tmux pane 1)
   └── pi-sock extension (in-process)
         └── unix socket ~/.pi/pi-sock/omn-assistant.sock (JSONL, fixed path)
-
-tmux pane 2: Ren (python, Pipecat) — a pi-sock CLIENT, nothing more
-  wake word → VAD/end-of-turn → STT
-    → send → canned ack ("Okay, scheduling that")
-    → agent_settled → get_message → compress → TTS summary
+              ├── command clients (scripts, one-shots, cron, other panes)
+              └── persistent clients (e.g. the Ren voice assistant, tmux pane 2)
 ```
 
-Ren has no brain of its own: it is a relay with canned acks. All reasoning stays in
-omn-assistant (one context of truth). General voice chat relays the same way, so
-complex or typed requests can always go straight into the TUI instead.
+Clients inject, observe, and abort; all reasoning stays in the pi session, which
+remains the single context of truth and stays fully visible/controllable in the TUI.
 
 ## Protocol (JSONL over unix socket)
 
@@ -75,16 +65,16 @@ Commands (client → pi):
 {"id":"r5","type":"abort"}
 ```
 
-- `mode`: `steer` (default) or `follow_up`. Steering matches the conversational
-  reality of a relay: a follow-up like "actually, Y instead" must reach the agent
-  between tool calls of the current run, not pile up behind it. When the agent is
-  idle, the send goes direct (control.ts already skips queueing on idle).
-  `follow_up` stays available for explicitly deferred requests.
+- `mode`: `steer` (default) or `follow_up`. Steering matches conversational relay
+  use: a correction like "actually, Y instead" must reach the agent between tool
+  calls of the current run, not pile up behind it. When the agent is idle, the send
+  goes direct (control.ts already skips queueing on idle). `follow_up` stays
+  available for explicitly deferred requests.
 - Responses mirror control.ts: `{type:"response",command,success,data?,error?,id?}`.
 - Events: `{type:"event",event:"agent_settled",data:{lastAssistant,...}}`.
 
-No sender metadata, no request-id bookkeeping, no voice-specific fields anywhere in
-the API. Ren's ack/settle correlation is Ren's problem.
+No sender metadata, no request-id bookkeeping, no client-specific fields anywhere in
+the API. Correlating a settled run to a specific request is a client-side concern.
 
 ## Repository setup
 
@@ -97,12 +87,7 @@ Worktree-friendly layout per the `g` fish helper:
 
 `g clone`/`g wt`/`g cd` all key off `<repo>/main`, so the plugin lives at
 `~/docs/src/pi-sock/main` and worktrees are siblings. Published to
-`git.quinntyx.dev` (Forgejo) as `quinntyx/pi-sock` via the `fj` CLI:
-
-```
-cd ~/docs/src/pi-sock/main
-fj repo create pi-sock -d "Unix-socket JSONL RPC extension for live pi TUI sessions" -r origin -p
-```
+`git.quinntyx.dev` (Forgejo) as `quinntyx/pi-sock` via the `fj` CLI.
 
 Package shape follows the user's other pi plugins: a `package.json` with the
 `pi.manifest`/`pi.extensions` entry (like `pi-ptc-next`'s manifest), extension entry
@@ -127,47 +112,39 @@ omn-assistant profile.
 
 `echo '{"type":"send","text":"/daily"}' | socat - UNIX-CONNECT:~/.pi/pi-sock/...sock`
 plus a small `pisock wait-settled` helper. Test matrix in tmux: idle send; send while
-agent runs (must queue, not steer); `/new` mid-flight; client killed mid-run; stale
-socket after crash.
+agent runs (must steer between tool calls); `/new` mid-flight; client killed mid-run;
+stale socket after crash.
 
-### M3 — Ren MVP (2–4 days, separate repo)
+### M3 — first real client (open)
 
-Pipecat pipeline: OpenWakeWord (16 kHz mono frames) → Silero VAD end-of-turn → STT
-(local first) → tool `relay_to_omn(text)` → TTS. The tool opens the socket, sends,
-speaks the canned ack, then on the next `agent_settled` reads `get_message`, strips
-markdown/tables, compresses to one or two speakable sentences, and TTSes it. Ren
-keeps its own FIFO of outstanding sends for attribution; pi-sock stays ignorant.
+Ren is the flagship client and lives in the `ren-assistant` repo with its own
+plan and milestones. Any other client (scripts, cron, other panes) works against
+the same five commands.
 
 ### M4 — polish (later)
 
-- Voice-concise replies: Ren-side compression first; only if insufficient, a generic
-  (still not voice-specific) pi-sock hook that lets clients tag a send with an
-  optional plain-text note appended to the prompt.
-- Wake-word tuning; custom OpenWakeWord model later if the user likes the setup.
-- Optional `get_summary` (cheap model) if last-assistant text is too long to speak.
+- Optional `get_summary` (cheap model) if the last assistant text is too long for a
+  client to consume raw.
+- Optional generic per-send annotation hook: a plain-text note appended to the
+  prompt (still client-agnostic — no sender types in the schema).
 
 ## Caveats
 
-1. **Steering is the default, by design.** Voice interactions are conversational:
-   corrections and reversals must land mid-run ("actually, Y instead"). The cost is
-   that an external send can redirect an in-flight task — that is the intended
-   behavior, and clients that want hands-off queueing pass `mode:"follow_up"`
+1. **Steering is the default, by design.** External sends land between tool calls
+   of the current run; clients that want hands-off queueing pass `mode:"follow_up"`
    explicitly.
 2. **Context growth.** Every injected message lives in the main session; compaction
-   handles volume. Do not route clients to a side session — the shared context is the
-   point.
+   handles volume. Do not route clients to a side session — the shared context is
+   the point.
 3. **Attribution races.** A typed prompt interleaved between a client send and its
-   settle can make the next `get_message` return a reply meant for the typed prompt.
-   This is the client's problem to disambiguate (compare timestamps; if in doubt,
-   stay silent). The socket provides honest primitives, not interpretation.
+   settle can make the next `get_message` return a reply meant for the typed
+   prompt. This is the client's problem to disambiguate (compare timestamps; if in
+   doubt, stay silent). The socket provides honest primitives, not interpretation.
 4. **Session lifecycle.** `/new`, `/resume`, `/reload` rebind the server; a fixed
    socket path means clients must reconnect on `ECONNREFUSED`/`ENOENT` with backoff.
    Stale sockets are unlinked before bind.
 5. **Security.** The socket injects prompts into an agent with full shell access.
-   Unix perms (0700 dir, 0600 socket) are the entire security model; treat it like an
-   exposed REPL — local user account only, nothing network-exposed.
-6. **OpenWakeWord quality (Ren side).** No stock "ren" model; use the closest stock
-   wake word initially, train a custom model later if the setup sticks.
-7. **Blocking dialogs.** Rare in YOLO mode; if one appears, the operator answers it
-   in the TUI pane manually. Ren's settle handler should timeout gracefully if a
-   settle never arrives.
+   Unix perms (0700 dir, 0600 socket) are the entire security model; treat it like
+   an exposed REPL — local user account only, nothing network-exposed.
+6. **Blocking dialogs.** Rare in YOLO mode; if one appears, the operator answers it
+   in the TUI pane manually. Clients should handle settle timeouts gracefully.
