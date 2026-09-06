@@ -68,17 +68,18 @@ complex or typed requests can always go straight into the TUI instead.
 Commands (client → pi):
 
 ```json
-{"id":"r1","type":"send","text":"...","mode":"auto"}
+{"id":"r1","type":"send","text":"...","mode":"steer"}
 {"id":"r2","type":"get_state"}
 {"id":"r3","type":"get_message"}
 {"id":"r4","type":"subscribe","events":["agent_start","turn_end","agent_settled"]}
 {"id":"r5","type":"abort"}
 ```
 
-- `mode`: `auto` (default) = direct when idle, else queued as `follow_up`. Never
-  `steer` from an external client; steering mid-run injects an unrelated instruction
-  into an active task. Correlation of a settled run to a specific request is a
-  client-side concern; the socket stays session-generic.
+- `mode`: `steer` (default) or `follow_up`. Steering matches the conversational
+  reality of a relay: a follow-up like "actually, Y instead" must reach the agent
+  between tool calls of the current run, not pile up behind it. When the agent is
+  idle, the send goes direct (control.ts already skips queueing on idle).
+  `follow_up` stays available for explicitly deferred requests.
 - Responses mirror control.ts: `{type:"response",command,success,data?,error?,id?}`.
 - Events: `{type:"event",event:"agent_settled",data:{lastAssistant,...}}`.
 
@@ -147,8 +148,11 @@ keeps its own FIFO of outstanding sends for attribution; pi-sock stays ignorant.
 
 ## Caveats
 
-1. **Queueing semantics.** `auto` mode queues while the agent runs; a long-running
-   task delays a simple request. Ren should say "queued behind the current task."
+1. **Steering is the default, by design.** Voice interactions are conversational:
+   corrections and reversals must land mid-run ("actually, Y instead"). The cost is
+   that an external send can redirect an in-flight task — that is the intended
+   behavior, and clients that want hands-off queueing pass `mode:"follow_up"`
+   explicitly.
 2. **Context growth.** Every injected message lives in the main session; compaction
    handles volume. Do not route clients to a side session — the shared context is the
    point.
