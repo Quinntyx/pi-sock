@@ -35,8 +35,9 @@ echoed on its response.
 {"id":"r1","type":"send","text":"...","mode":"steer"}
 {"id":"r2","type":"get_state"}
 {"id":"r3","type":"get_message"}
-{"id":"r4","type":"subscribe","events":["agent_start","turn_end","agent_settled"]}
+{"id":"r4","type":"subscribe","events":["agent_start","turn_end","agent_settled","activity_change"]}
 {"id":"r5","type":"abort"}
+{"id":"r6","type":"get_activity","includeStats":false}
 ```
 
 **`send`** injects the text as a `[session-message]` custom message in the
@@ -57,7 +58,8 @@ Response: `{"type":"response","command":"send","success":true,"data":{"delivered
 `{"message":{"content":"…","timestamp":…}}` or `{"message":null}`.
 
 **`subscribe`** takes a non-empty subset of
-`agent_start`, `turn_end`, `agent_settled` and persists until the socket closes.
+`agent_start`, `turn_end`, `agent_settled`, `activity_change` and persists until
+the socket closes.
 Matched events arrive as `{"type":"event","event":"…","data":{…}}` lines:
 
 - `agent_start` → `{timestamp}`
@@ -68,6 +70,27 @@ Matched events arrive as `{"type":"event","event":"…","data":{…}}` lines:
 `agent_settled` fires only when pi will not auto-continue (retries, compaction
 retries, and queued follow-ups all drained) — use it for "done" detection, not
 `agent_end`.
+
+**`get_activity`** returns the current activity snapshot when
+[pi-tool-tree](https://git.quinntyx.dev/quinntyx/pi-tool-tree) is installed in the
+session, or `{"available":false}` when it is not. Pass `"includeStats":true` to
+include cumulative session stats under `stats`:
+
+```json
+{"type":"response","command":"get_activity","success":true,"data":
+ {"available":true,"phase":"tool","isThinking":false,"isRunningTool":true,
+  "label":"implementing","labelElapsedMs":4200,"labelCalls":3,
+  "thinkingElapsedMs":0,
+  "calls":[{"toolCallId":"…","toolName":"edit","label":"implementing","elapsedMs":120}],
+  "run":{"elapsedMs":41200,"turns":5,"toolCalls":3,"thinkingMs":900}}}
+```
+
+**`activity_change`** events (subscribe-only) relay pi-tool-tree's change stream:
+`{"type":"event","event":"activity_change","data":{"activity":{…snapshot…},"change":{"type":"tool-start",…}}}`.
+Subscribing pushes an immediate baseline `activity_change` with
+`change.type":"snapshot"` so late joiners do not have to reconstruct state from
+deltas. The relay is one persistent listener inside pi — its cost is the same
+whether or not any client is subscribed.
 
 **`abort`** cancels the current run (same as Esc in the TUI).
 

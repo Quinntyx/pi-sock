@@ -82,6 +82,14 @@ interface RpcGetMessageCommand {
 interface RpcSubscribeCommand {
 	type: "subscribe";
 	events?: string[];
+	/** get_activity only: include cumulative session stats in the snapshot */
+	includeStats?: boolean;
+	id?: string;
+}
+
+interface RpcGetActivityCommand {
+	type: "get_activity";
+	includeStats?: boolean;
 	id?: string;
 }
 
@@ -94,10 +102,64 @@ type RpcCommand =
 	| RpcSendCommand
 	| RpcGetStateCommand
 	| RpcGetMessageCommand
+	| RpcGetActivityCommand
 	| RpcSubscribeCommand
 	| RpcAbortCommand;
 
-const SUBSCRIBABLE_EVENTS = new Set(["agent_start", "turn_end", "agent_settled"]);
+const SUBSCRIBABLE_EVENTS = new Set(["agent_start", "turn_end", "agent_settled", "activity_change"]);
+
+// ============================================================================
+// pi-tool-tree activity relay
+// ============================================================================
+
+// Trimmed ActivitySnapshot per pi-tool-tree's API.md — everything a remote
+// client needs, nothing renderer-specific.
+interface ActivityTrimmed {
+	available: true;
+	phase: string;
+	isWorking: boolean;
+	isThinking: boolean;
+	isRunningTool: boolean;
+	label: string | null;
+	labelElapsedMs: number;
+	labelCalls: number;
+	thinkingElapsedMs: number;
+	calls: Array<{ toolCallId: string; toolName: string; label: string; elapsedMs: number }>;
+	run: Record<string, unknown>;
+}
+
+function trimmedActivity(activity: Record<string, unknown> | undefined): ActivityTrimmed {
+	const a = activity ?? {};
+	return {
+		available: true,
+		phase: (a.phase as string) ?? "idle",
+		isWorking: Boolean(a.isWorking),
+		isThinking: Boolean(a.isThinking),
+		isRunningTool: Boolean(a.isRunningTool),
+		label: (a.label as string | null) ?? null,
+		labelElapsedMs: (a.labelElapsedMs as number) ?? 0,
+		labelCalls: (a.labelCalls as number) ?? 0,
+		thinkingElapsedMs: (a.thinkingElapsedMs as number) ?? 0,
+		calls: Array.isArray(a.calls)
+			? (a.calls as Array<Record<string, unknown>>).map((call) => ({
+					toolCallId: call.toolCallId as string,
+					toolName: call.toolName as string,
+					label: (call.label as string | null) ?? "",
+					elapsedMs: (call.elapsedMs as number) ?? 0,
+				}))
+			: [],
+		run: (a.run as Record<string, unknown>) ?? {},
+	};
+}
+
+function toolTreeApi(): {
+	getActivity?: () => Record<string, unknown>;
+	getStats?: () => Record<string, unknown>;
+	subscribe?: (listener: (activity: Record<string, unknown>, change: Record<string, unknown>) => void) => () => void;
+} | null {
+	const api = (globalThis as Record<symbol, unknown>)[Symbol.for("pi-tool-tree:api")];
+	return api && typeof api === "object" ? (api as never) : null;
+}
 
 // ============================================================================
 // Server state
@@ -115,6 +177,8 @@ interface SocketState {
 	context: ExtensionContext | null;
 	subscriptions: Subscription[];
 	agentStartedAt: number | null;
+	/** unsubscribe fn for the pi-tool-tree activity relay (per bound session) */
+	activityUnsubscribe: (() => void) | null;
 }
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
@@ -242,6 +306,22 @@ async function handleCommand(
 		return;
 	}
 
+	if (command.type === "get_activity") {
+		const api = toolTreeApi();
+		if (!api || typeof api.getActivity !== "function") {
+			respond(true, "get_activity", { available: false });
+			return;
+		}
+		try {
+			const activity = trimmedActivity(api.getActivity() as never);
+			const stats = typeof api.getStats === "function" && command.includeStats ? api.getStats() : undefined;
+			respond(true, "get_activity", { ...activity, stats });
+		} catch (error) {
+			respond(false, "get_activity", undefined, error instanceof Error ? error.message : "activity query failed");
+		}
+		return;
+	}
+
 	if (command.type === "subscribe") {
 		const requested = Array.isArray(command.events) ? command.events : [];
 		const invalid = requested.filter((event) => !SUBSCRIBABLE_EVENTS.has(event));
@@ -263,6 +343,22 @@ async function handleCommand(
 		};
 		socket.once("close", cleanup);
 		socket.once("error", cleanup);
+		// Late joiners get a baseline activity snapshot so they do not have to
+		// reconstruct state from deltas.
+		if (requested.includes("activity_change")) {
+			const api = toolTreeApi();
+			if (api && typeof api.getActivity === "function") {
+				try {
+					writeEvent(socket, {
+						type: "event",
+						event: "activity_change",
+						data: { activity: trimmedActivity(api.getActivity() as never), change: { type: "snapshot" } },
+					});
+				} catch {
+					// never fail the subscription over UI plumbing
+				}
+			}
+		}
 		respond(true, "subscribe", { subscriptionId, events: requested });
 		return;
 	}
@@ -303,7 +399,7 @@ async function handleCommand(
 		return;
 	}
 
-	respond(false, command.type, undefined, `Unsupported command: ${command.type}`);
+	respond(false, (command as { type: string }).type, undefined, `Unsupported command: ${(command as { type: string }).type}`);
 }
 
 // sendMessage is captured off the API object because the closure is created
@@ -418,6 +514,7 @@ export default function (pi: ExtensionAPI) {
 		context: null,
 		subscriptions: [],
 		agentStartedAt: null,
+		activityUnsubscribe: null,
 	};
 
 	const fire = (event: string, data: unknown) => {
@@ -427,11 +524,50 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
+	/**
+	 * Relay pi-tool-tree activity changes to subscribed clients. One persistent
+	 * listener per bound session; fire() already gates on current subscribers,
+	 * so the cost is one cheap listener regardless of client count.
+	 */
+	const attachActivityRelay = () => {
+		if (state.activityUnsubscribe) {
+			try {
+				state.activityUnsubscribe();
+			} catch {
+				// best-effort teardown
+			}
+			state.activityUnsubscribe = null;
+		}
+		const api = toolTreeApi();
+		if (!api || typeof api.subscribe !== "function" || typeof api.getActivity !== "function") {
+			return;
+		}
+		try {
+			state.activityUnsubscribe = api.subscribe((activity, change) => {
+				fire("activity_change", {
+					activity: trimmedActivity(activity),
+					change,
+				});
+			});
+		} catch {
+			// pi-tool-tree present but subscription failed — relay stays off
+		}
+	};
+
 	pi.on("session_start", async (_event, ctx) => {
 		await startControlServer(pi, state, ctx);
+		attachActivityRelay();
 	});
 
 	pi.on("session_shutdown", async (_event, _ctx) => {
+		if (state.activityUnsubscribe) {
+			try {
+				state.activityUnsubscribe();
+			} catch {
+				// best-effort teardown
+			}
+			state.activityUnsubscribe = null;
+		}
 		if (state.context?.hasUI) {
 			state.context.ui.setStatus(STATUS_KEY, undefined);
 		}
