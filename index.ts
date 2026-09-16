@@ -124,7 +124,7 @@ interface ActivityTrimmed {
 	labelElapsedMs: number;
 	labelCalls: number;
 	thinkingElapsedMs: number;
-	calls: Array<{ toolCallId: string; toolName: string; label: string; elapsedMs: number }>;
+	calls: Array<{ toolCallId: string; toolName: string; label: string; elapsedMs: number; argPreview?: string }>;
 	run: Record<string, unknown>;
 }
 
@@ -146,6 +146,7 @@ function trimmedActivity(activity: Record<string, unknown> | undefined): Activit
 					toolName: call.toolName as string,
 					label: (call.label as string | null) ?? "",
 					elapsedMs: (call.elapsedMs as number) ?? 0,
+					argPreview: (call.argPreview as string | undefined) ?? undefined,
 				}))
 			: [],
 		run: (a.run as Record<string, unknown>) ?? {},
@@ -289,9 +290,20 @@ async function handleCommand(
 
 	if (command.type === "get_state") {
 		const model = ctx.model;
+		let context: { tokens: number | null; contextWindow: number; percent: number | null } | null = null;
+		try {
+			const usage = (ctx as unknown as { getContextUsage?: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined })
+				.getContextUsage?.();
+			if (usage) {
+				context = { tokens: usage.tokens, contextWindow: usage.contextWindow, percent: usage.percent };
+			}
+		} catch {
+			// context readout is best-effort
+		}
 		respond(true, "get_state", {
 			isIdle: ctx.isIdle(),
 			hasPendingMessages: ctx.hasPendingMessages(),
+			context,
 			model: model ? `${model.provider}/${model.id}` : null,
 			thinkingLevel: ctx.thinkingLevel,
 			sessionId: ctx.sessionManager.getSessionId(),
