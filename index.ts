@@ -14,6 +14,7 @@
  *     {"id":"r3","type":"get_message"}
  *     {"id":"r4","type":"subscribe","events":["agent_start","turn_end","agent_settled"]}
  *     {"id":"r5","type":"abort"}
+ *     {"id":"r6","type":"set_session_name","name":"..."}
  *
  *   Responses (pi -> client):
  *     {"type":"response","command":"...","success":true,"data":...,"id":"r1"}
@@ -98,13 +99,20 @@ interface RpcAbortCommand {
 	id?: string;
 }
 
+interface RpcSetSessionNameCommand {
+	type: "set_session_name";
+	name?: string;
+	id?: string;
+}
+
 type RpcCommand =
 	| RpcSendCommand
 	| RpcGetStateCommand
 	| RpcGetMessageCommand
 	| RpcGetActivityCommand
 	| RpcSubscribeCommand
-	| RpcAbortCommand;
+	| RpcAbortCommand
+	| RpcSetSessionNameCommand;
 
 const SUBSCRIBABLE_EVENTS = new Set(["agent_start", "turn_end", "agent_settled", "activity_change"]);
 
@@ -407,6 +415,23 @@ async function handleCommand(
 			respond(true, "send", { delivered: true, mode: isIdle ? "direct" : mode });
 		} catch (error) {
 			respond(false, "send", undefined, error instanceof Error ? error.message : "Send failed");
+		}
+		return;
+	}
+
+	// Live rename: pi appends a session_info entry and interactive mode refreshes
+	// the terminal title ("π - <name> - <cwd>") on session_info_changed.
+	if (command.type === "set_session_name") {
+		const name = command.name;
+		if (typeof name !== "string" || name.trim().length === 0) {
+			respond(false, "set_session_name", undefined, "Missing name");
+			return;
+		}
+		try {
+			pi.setSessionName(name.trim());
+			respond(true, "set_session_name", { renamed: name.trim() });
+		} catch (error) {
+			respond(false, "set_session_name", undefined, error instanceof Error ? error.message : "Rename failed");
 		}
 		return;
 	}
