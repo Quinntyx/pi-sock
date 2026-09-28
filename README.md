@@ -17,7 +17,7 @@ trimmed to a single-session, client-agnostic transport: no session discovery, no
 aliases, no CLI startup sends, no LLM summarizer, and a generic wire protocol that
 knows nothing about its clients.
 
-Attribution: fork of [`mitsuhiko/agent-stuff`](https://github.com/mitsuhiko/agent-stuff) by Armin Ronacher (session-control extension).
+Attribution: inspired by the session-control extension in [`mitsuhiko/agent-stuff`](https://github.com/mitsuhiko/agent-stuff) by Armin Ronacher.
 
 ## Install
 
