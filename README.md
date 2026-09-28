@@ -1,5 +1,8 @@
 # pi-sock — unix-socket JSONL RPC for a live pi TUI session
 
+> [!NOTE]
+> **Upstream:** the canonical, community-facing home of this project is [github.com/Quinntyx/pi-sock](https://github.com/Quinntyx/pi-sock). This git.quinntyx.dev copy is the author's development fork — day-to-day churn lands here and is PR'd to GitHub on release. Install instructions below point at GitHub.
+
 pi-sock is a [pi](https://github.com/earendil-works/pi) coding-agent extension that
 opens a unix domain socket into the *running* pi process. Any local program can
 inject messages into, observe, and abort the agent — while the TUI stays attached,
@@ -16,7 +19,7 @@ knows nothing about its clients.
 
 ## Install
 
-    pi install git:git.quinntyx.dev/quinntyx/pi-sock
+    pi install git:github.com/Quinntyx/pi-sock
 
 or add to a profile `settings.json` `packages` list. The socket binds on session
 start: `~/.pi/pi-sock/<PI_SOCK_NAME>.sock` (default `main.sock`). The directory is
@@ -72,7 +75,7 @@ retries, and queued follow-ups all drained) — use it for "done" detection, not
 `agent_end`.
 
 **`get_activity`** returns the current activity snapshot when
-[pi-tool-tree](https://git.quinntyx.dev/quinntyx/pi-tool-tree) is installed in the
+[pi-tool-tree](https://github.com/Quinntyx/pi-tool-tree) is installed in the
 session, or `{"available":false}` when it is not. Pass `"includeStats":true` to
 include cumulative session stats under `stats`:
 
