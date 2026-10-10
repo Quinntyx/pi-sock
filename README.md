@@ -57,10 +57,20 @@ Response: `{"type":"response","command":"send","success":true,"data":{"delivered
 (`mode:"direct"` means the agent was idle and the turn started immediately).
 
 **`get_state`** returns
-`{"isIdle":bool,"hasPendingMessages":bool,"model":"provider/id","thinkingLevel":"…","sessionId":"…","sessionFile":"…"}`.
+`{"isIdle":bool,"hasPendingMessages":bool,"model":"provider/id","thinkingLevel":"…","sessionId":"…","sessionFile":"…","quotaWait":{"active":bool,"elapsedMs":number}}`.
+
+`quotaWait` tracks only provisioned-quota pauses reported by `pi-session-quota`.
+`elapsedMs` is cumulative monotonic pause time for this process, including the
+current pause. Clients should baseline it for each new run and exclude only new
+pause time from execution deadlines. While `active` is true, `isIdle` is false:
+a quota pause is not a completed run. Cancellation and terminal weekly errors
+end the pause normally. Older servers without this field retain their existing
+client timeout behavior.
 
 **`get_message`** returns the last assistant message:
-`{"message":{"content":"…","timestamp":…}}` or `{"message":null}`.
+`{"message":{"content":"…","timestamp":…, "stopReason":"…","errorMessage":"…"}}` or `{"message":null}`.
+Terminal error/aborted assistant messages are retained even without text, rather
+than returning an older successful reply. Optional metadata is omitted when absent.
 
 **`subscribe`** takes a non-empty subset of
 `agent_start`, `turn_end`, `agent_settled`, `activity_change` and persists until
@@ -138,3 +148,5 @@ Or with the bundled CLI (`scripts/pisock`, Node ≥ 18, no dependencies):
 Layout: `index.ts` (extension, TypeScript loaded by pi via jiti — no build step),
 `scripts/pisock` (CLI client), `vendor-reference/` (upstream control.ts + its
 license). See [PLAN.md](PLAN.md) for design notes, the test matrix, and caveats.
+
+Run the monotonic quota-pause clock test with `node --experimental-strip-types --test test/quota-wait.test.ts`. Cross-process lifecycle coverage lives in `pi-session-quota` and exercises the real Pi socket together with the Python client.

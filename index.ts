@@ -37,6 +37,7 @@ import { promises as fs } from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { QuotaWaitClock } from "./quota-wait.js";
 
 const SOCK_DIR = path.join(os.homedir(), ".pi", "pi-sock");
 const SOCK_NAME = process.env.PI_SOCK_NAME ?? "main";
@@ -186,6 +187,7 @@ interface SocketState {
 	context: ExtensionContext | null;
 	subscriptions: Subscription[];
 	agentStartedAt: number | null;
+	quotaWait: QuotaWaitClock;
 	/** unsubscribe fn for the pi-tool-tree activity relay (per bound session) */
 	activityUnsubscribe: (() => void) | null;
 }
@@ -213,6 +215,8 @@ interface ExtractedMessage {
 	role: "user" | "assistant";
 	content: string;
 	timestamp: number;
+	stopReason?: string;
+	errorMessage?: string;
 }
 
 function getLastAssistantMessage(ctx: ExtensionContext): ExtractedMessage | undefined {
@@ -226,11 +230,13 @@ function getLastAssistantMessage(ctx: ExtensionContext): ExtractedMessage | unde
 				const textParts = msg.content
 					.filter((c): c is { type: "text"; text: string } => c.type === "text")
 					.map((c) => c.text);
-				if (textParts.length > 0) {
+				if (textParts.length > 0 || msg.stopReason === "error" || msg.stopReason === "aborted") {
 					return {
 						role: "assistant",
 						content: textParts.join("\n"),
 						timestamp: msg.timestamp,
+						stopReason: msg.stopReason,
+						errorMessage: msg.errorMessage,
 					};
 				}
 			}
@@ -308,8 +314,10 @@ async function handleCommand(
 		} catch {
 			// context readout is best-effort
 		}
+		const quotaWait = state.quotaWait.snapshot();
 		respond(true, "get_state", {
-			isIdle: ctx.isIdle(),
+			isIdle: ctx.isIdle() && !quotaWait.active,
+			quotaWait,
 			hasPendingMessages: ctx.hasPendingMessages(),
 			context,
 			model: model ? `${model.provider}/${model.id}` : null,
@@ -551,8 +559,19 @@ export default function (pi: ExtensionAPI) {
 		context: null,
 		subscriptions: [],
 		agentStartedAt: null,
+		quotaWait: new QuotaWaitClock(),
 		activityUnsubscribe: null,
 	};
+
+	// Provisioned quota pauses remain live runs. Expose their cumulative duration
+	// so external orchestration clocks do not mistake a wait for a timeout.
+	pi.events.on("session-quota:wait-state", (data) => {
+		if (!data || typeof data !== "object") return;
+		const value = data as { active?: unknown; reason?: unknown };
+		if (typeof value.active === "boolean" && value.reason === "provisioned_quota_exhausted") {
+			state.quotaWait.setActive(value.active);
+		}
+	});
 
 	const fire = (event: string, data: unknown) => {
 		for (const sub of [...state.subscriptions]) {
@@ -608,6 +627,7 @@ export default function (pi: ExtensionAPI) {
 		if (state.context?.hasUI) {
 			state.context.ui.setStatus(STATUS_KEY, undefined);
 		}
+		state.quotaWait.setActive(false);
 		await stopControlServer(state);
 	});
 
@@ -628,6 +648,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
+		state.quotaWait.setActive(false);
 		const lastMessage = getLastAssistantMessage(ctx);
 		const startedAt = state.agentStartedAt;
 		state.agentStartedAt = null;
