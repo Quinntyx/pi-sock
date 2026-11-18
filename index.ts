@@ -42,7 +42,6 @@ import { QuotaWaitClock } from "./quota-wait.js";
 const SOCK_DIR = path.join(os.homedir(), ".pi", "pi-sock");
 const SOCK_NAME = process.env.PI_SOCK_NAME ?? "main";
 const SOCKET_SUFFIX = ".sock";
-const STATUS_KEY = "pi-sock";
 
 // ============================================================================
 // Wire types
@@ -492,7 +491,7 @@ function createServer(state: SocketState): net.Server {
 	});
 }
 
-async function startControlServer(pi: ExtensionAPI, state: SocketState, ctx: ExtensionContext): Promise<void> {
+async function startControlServer(state: SocketState, ctx: ExtensionContext): Promise<void> {
 	await fs.mkdir(SOCK_DIR, { recursive: true, mode: 0o700 });
 	await fs.chmod(SOCK_DIR, 0o700);
 	const socketPath = path.join(SOCK_DIR, `${SOCK_NAME_SAFE}${SOCKET_SUFFIX}`);
@@ -517,10 +516,6 @@ async function startControlServer(pi: ExtensionAPI, state: SocketState, ctx: Ext
 		});
 	});
 	await fs.chmod(socketPath, 0o600);
-
-	if (ctx.hasUI) {
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", `pi-sock: ${socketPath}`));
-	}
 }
 
 async function stopControlServer(state: SocketState): Promise<void> {
@@ -611,7 +606,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		await startControlServer(pi, state, ctx);
+		await startControlServer(state, ctx);
 		attachActivityRelay();
 	});
 
@@ -623,9 +618,6 @@ export default function (pi: ExtensionAPI) {
 				// best-effort teardown
 			}
 			state.activityUnsubscribe = null;
-		}
-		if (state.context?.hasUI) {
-			state.context.ui.setStatus(STATUS_KEY, undefined);
 		}
 		state.quotaWait.setActive(false);
 		await stopControlServer(state);
